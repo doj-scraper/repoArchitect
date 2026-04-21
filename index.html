@@ -233,6 +233,11 @@
             font-size: 13px; position: relative;
         }
         .tree-row:hover { background: rgba(255,255,255,0.04); }
+        .tree-row:focus-visible { 
+            background: rgba(255,255,255,0.04); 
+            outline: 2px solid var(--purple); 
+            outline-offset: -2px; 
+        }
         .tree-row.selected {
             background: rgba(139,111,232,0.1);
             border-left-color: var(--purple);
@@ -747,7 +752,7 @@
             </div>
         </div>
         <div class="actions">
-            <button class="console-btn" id="undo-btn" disabled style="padding:8px 14px; font-size:11px;" title="Undo last structural action (Cmd+Z)">↩ Undo</button>
+            <button class="console-btn" id="undo-btn" disabled style="padding:8px 14px; font-size:11px;" title="Undo last structural action (add/delete/move) (Cmd+Z)">↩ Undo Structure</button>
             <button class="btn btn-import" id="open-import-btn" style="width:auto; padding:8px 16px; margin:0;">
                 ↑ Import
             </button>
@@ -1070,10 +1075,24 @@ const ImportParser = {
         const lines = text.split('\n').filter(l => l.trim());
         const root  = {};
         const stack = [{ node: root, indent: -1 }];
-
-        for (const line of lines) {
+        let indentStep = null;  // Track the expected indentation step
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
             const rawIndent = line.match(/^(\s*)/)[1];
-            const indent    = rawIndent.replace(/\t/g, '  ').length;
+            const indentLength = rawIndent.replace(/\t/g, '  ').length;
+            
+            // Determine indent step from first indented line
+            if (indentStep === null && indentLength > 0) {
+                indentStep = indentLength;
+            }
+            
+            // Validate that the indentation is a multiple of the indent step
+            if (indentStep !== null && indentLength % indentStep !== 0) {
+                throw new Error(`Invalid indentation on line ${i + 1}. Expected multiples of ${indentStep} spaces/tabs, got ${indentLength} spaces.`);
+            }
+            
+            const indent = indentLength;
             const trimmed   = line.trim();
             const isFolder  = trimmed.endsWith('/');
             const name      = trimmed.replace(/\/$/, '');
@@ -1306,10 +1325,14 @@ const TreeRenderer = {
         const wrapper = document.createElement('div');
         wrapper.className = 'tree-node';
         wrapper.dataset.path = path;
+        wrapper.setAttribute('role', 'group');
 
         const row = document.createElement('div');
         row.className = 'tree-row' + (selected ? ' selected' : '');
         row.dataset.path = path;
+        row.tabIndex = 0;
+        row.setAttribute('role', 'treeitem');
+        row.setAttribute('aria-expanded', isFolder ? 'true' : 'false');
 
         // Icon
         const icon = document.createElement('span');
@@ -1345,6 +1368,14 @@ const TreeRenderer = {
 
         // Click to select
         row.addEventListener('click', (e) => { e.stopPropagation(); onSelect(path, isFolder); });
+        
+        // Keyboard navigation
+        row.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelect(path, isFolder);
+            }
+        });
 
         // Drag source
         if (!isRoot) {
@@ -1452,16 +1483,16 @@ const ConsoleService = {
             const msg = Array.from(arguments).map(function(a) {
                 return typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a);
             }).join(' ');
-            try { window.parent.postMessage({ type: 'ghost-console', method, msg }, '*'); } catch(e) {}
+            try { window.parent.postMessage({ type: 'ghost-console', method, msg }, window.location.origin); } catch(e) {}
             orig.apply(console, arguments);
         };
     });
     window.onerror = function(msg, src, line) {
-        try { window.parent.postMessage({ type: 'ghost-console', method: 'error', msg: msg + ' (Ln ' + line + ')' }, '*'); } catch(e) {}
+        try { window.parent.postMessage({ type: 'ghost-console', method: 'error', msg: msg + ' (Ln ' + line + ')' }, window.location.origin); } catch(e) {}
         return false;
     };
     window.onunhandledrejection = function(e) {
-        try { window.parent.postMessage({ type: 'ghost-console', method: 'error', msg: 'Unhandled Promise: ' + (e.reason || e) }, '*'); } catch(e2) {}
+        try { window.parent.postMessage({ type: 'ghost-console', method: 'error', msg: 'Unhandled Promise: ' + (e.reason || e) }, window.location.origin); } catch(e2) {}
     };
 })();
 <\/script>`;
@@ -1814,6 +1845,10 @@ const EditorController = (() => {
         });
 
         window.addEventListener('message', (e) => {
+            // Security validation: Check origin and source
+            if (e.origin !== window.location.origin) return;
+            if (e.source !== document.getElementById('preview-iframe').contentWindow) return;
+            
             if (e.data?.type === 'ghost-console') {
                 ConsoleService.appendLog(e.data.msg, e.data.method);
                 const hud = document.getElementById('console-hud');
